@@ -1,19 +1,36 @@
+using AutoMapper;
+using Desafio.Umbler.Application;
 using Desafio.Umbler.Controllers;
+using Desafio.Umbler.Infrastructure;
 using Desafio.Umbler.Models;
-using DnsClient;
+using Desafio.Umbler.Services;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Moq;
 using System;
 using System.Threading.Tasks;
+using Desafio.Umbler.Application.Mappers;
+using Desafio.Umbler.ViewModels;
+using DnsClient;
+using Desafio.Umbler.Infrastructure.Interfaces;
 
 namespace Desafio.Umbler.Test
 {
     [TestClass]
     public class ControllersTest
     {
+
+        private readonly MapperConfiguration config = new MapperConfiguration(cfg => cfg.AddProfile<DomainProfile>());
+
+        private static DbContextOptions<DatabaseContext> GetOptions()
+        {
+            return new DbContextOptionsBuilder<DatabaseContext>()
+                .UseInMemoryDatabase(databaseName: "challange")
+                .Options;
+        }
+
         [TestMethod]
         public void Home_Index_returns_View()
         {
@@ -45,14 +62,11 @@ namespace Desafio.Umbler.Test
             Assert.IsNotNull(result);
             Assert.IsNotNull(model);
         }
-        
+
         [TestMethod]
-        public void Domain_In_Database()
+        public async Task Domain_In_Database()
         {
-            //arrange 
-            var options = new DbContextOptionsBuilder<DatabaseContext>()
-                .UseInMemoryDatabase(databaseName: "Find_searches_url")
-                .Options;
+            var options = GetOptions();
 
             var domain = new Domain { Id = 1, Ip = "192.168.0.1", Name = "test.com", UpdatedAt = DateTime.Now, HostedAt = "umbler.corp", Ttl = 60, WhoIs = "Ns.umbler.com" };
 
@@ -66,12 +80,14 @@ namespace Desafio.Umbler.Test
             // Use a clean instance of the context to run the test
             using (var db = new DatabaseContext(options))
             {
-                var controller = new DomainController(db);
+                var mockService = new SearchDomainService(db, new UmblerWhoisClient(), new LookupClient());
+                var mockApplication = new SearchDomainApplication(mockService, config.CreateMapper());
+                var controller = new DomainController(mockApplication);
 
                 //act
-                var response = controller.Get("test.com");
-                var result = response.Result as OkObjectResult;
-                var obj = result.Value as Domain;
+                var response = await controller.Get("test.com");
+                var result = response as OkObjectResult;
+                var obj = result.Value as DomainViewModel;
                 Assert.AreEqual(obj.Id, domain.Id);
                 Assert.AreEqual(obj.Ip, domain.Ip);
                 Assert.AreEqual(obj.Name, domain.Name);
@@ -79,82 +95,84 @@ namespace Desafio.Umbler.Test
         }
 
         [TestMethod]
-        public void Domain_Not_In_Database()
+        public async Task Domain_Not_In_Database()
         {
-            //arrange 
-            var options = new DbContextOptionsBuilder<DatabaseContext>()
-                .UseInMemoryDatabase(databaseName: "Find_searches_url")
-                .Options;
-
             // Use a clean instance of the context to run the test
-            using (var db = new DatabaseContext(options))
+            using (var db = new DatabaseContext(GetOptions()))
             {
-                var controller = new DomainController(db);
+                var mockService = new SearchDomainService(db, new UmblerWhoisClient(), new LookupClient());
+                var mockApplication = new SearchDomainApplication(mockService, config.CreateMapper());
+                var controller = new DomainController(mockApplication);
 
                 //act
-                var response = controller.Get("test.com");
-                var result = response.Result as OkObjectResult;
-                var obj = result.Value as Domain;
+                var response = await controller.Get("test.com");
+                var result = response as OkObjectResult;
+                var obj = result.Value as DomainViewModel;
                 Assert.IsNotNull(obj);
             }
         }
 
         [TestMethod]
-        public void Domain_Moking_LookupClient()
+        public async Task Domain_Moking_LookupClient()
         {
             //arrange 
-            var lookupClient = new Mock<LookupClient>();
+            var lookupClient = new Mock<IUmblerLookupClient>(MockBehavior.Strict);
             var domainName = "test.com";
 
-            var dnsResponse = new Mock<IDnsQueryResponse>();
-            lookupClient.Setup(l => l.QueryAsync(domainName, QueryType.ANY)).Returns(Task.FromResult(dnsResponse.Object));
-
-            //arrange 
-            var options = new DbContextOptionsBuilder<DatabaseContext>()
-                .UseInMemoryDatabase(databaseName: "Find_searches_url")
-                .Options;
+            var dnsResponse = new Mock<IDnsQueryResponse>(MockBehavior.Strict);
+            lookupClient.Setup(f => f.QueryAsync(domainName)).Returns(Task.FromResult(dnsResponse.Object));
 
             // Use a clean instance of the context to run the test
-            using (var db = new DatabaseContext(options))
+            using (var db = new DatabaseContext(GetOptions()))
             {
                 //inject lookupClient in controller constructor
-                var controller = new DomainController(db/*,IWhoisClient, ILookupClient*/ );
+
+                //------------------------------------------------------------
+                // lookupClient.Object methods (queryAsync) is allways
+                // returning null. So I keep the literal intance of class
+                //------------------------------------------------------------
+                var mockService = new SearchDomainService(db, new UmblerWhoisClient(), lookupClient.Object);
+                var mockApplication = new SearchDomainApplication(mockService, config.CreateMapper());
+                var controller = new DomainController(mockApplication);
 
                 //act
-                var response = controller.Get("test.com");
-                var result = response.Result as OkObjectResult;
-                var obj = result.Value as Domain;
+                var response = await controller.Get("test.com");
+                var result = response as OkObjectResult;
+                var obj = result.Value as DomainViewModel;
+
                 Assert.IsNotNull(obj);
+                Assert.IsNotNull(dnsResponse.Object);
             }
         }
 
         [TestMethod]
-        public void Domain_Moking_WhoisClient()
+        public async Task Domain_Moking_WhoisClient()
         {
-            //arrange
-            //whois is a static class, we need to create a class to "wrapper" in a mockable version of WhoisClient
-            //var whoisClient = new Mock<IWhoisClient>();
-            //var domainName = "test.com";
+            // arrange
+            // whois is a static class, we need to create a class to "wrapper" in a mockable version of WhoisClient
+            var whoisClient = new Mock<IUmblerWhoisClient>(MockBehavior.Strict);
+            var domainName = "test.com";
 
-            //whoisClient.Setup(l => l.QueryAsync(domainName)).Return();
+            // Use a clean instance of the context to run the test
+            using (var db = new DatabaseContext(GetOptions()))
+            {
+                //inject lookupClient in controller constructor
 
-            ////arrange 
-            //var options = new DbContextOptionsBuilder<DatabaseContext>()
-            //    .UseInMemoryDatabase(databaseName: "Find_searches_url")
-            //    .Options;
+                //------------------------------------------------------------
+                // whoisClient.Object methods (queryAsync) is allways
+                // returning null. So I keep the literal intance of class
+                //------------------------------------------------------------
+                var mockService = new SearchDomainService(db, whoisClient.Object, new LookupClient());
+                var mockApplication = new SearchDomainApplication(mockService, config.CreateMapper());
+                var controller = new DomainController(mockApplication);
 
-            //// Use a clean instance of the context to run the test
-            //using (var db = new DatabaseContext(options))
-            //{
-            //    //inject IWhoisClient in controller's constructor
-            //    var controller = new DomainController(db/*,IWhoisClient, ILookupClient*/);
+                //act
+                var response = await controller.Get(domainName);
+                var result = response as OkObjectResult;
+                var obj = result.Value as DomainViewModel;
 
-            //    //act
-            //    var response = controller.Get("test.com");
-            //    var result = response.Result as OkObjectResult;
-            //    var obj = result.Value as Domain;
-            //    Assert.IsNotNull(obj);
-            //}
+                Assert.IsNotNull(obj);
+            }
         }
     }
 }
